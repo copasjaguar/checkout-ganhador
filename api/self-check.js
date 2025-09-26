@@ -1,34 +1,15 @@
 export default async function handler(req, res) {
   const url = process.env.UPSTASH_REDIS_REST_URL;
   const token = process.env.UPSTASH_REDIS_REST_TOKEN;
+  const h = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
 
-  let write=null, read=null, err=null;
+  const w = await fetch(url, { method:'POST', headers:h,
+    body: JSON.stringify({ command: ['SETEX','yampi:last','600', JSON.stringify({ ok:true, ts:Date.now() })] })
+  }).then(r=>r.json()).catch(e=>({error:String(e)}));
 
-  try {
-    const w = await fetch(url, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        command: ["SETEX", "yampi:last", "600", JSON.stringify({ selfcheck: true, ts: Date.now() })]
-      })
-    });
-    write = await w.json();
+  const r = await fetch(url, { method:'POST', headers:h,
+    body: JSON.stringify({ command: ['GET','yampi:last'] })
+  }).then(r=>r.json()).catch(e=>({error:String(e)}));
 
-    const r = await fetch(url, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({ command: ["GET", "yampi:last"] })
-    });
-    read = await r.json();
-  } catch (e) {
-    err = String(e);
-  }
-
-  res.status(200).json({ ok: !err, write, read, err });
+  res.status(200).json({ write:w, read:r });
 }
