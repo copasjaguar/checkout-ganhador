@@ -1,3 +1,14 @@
+export default async function handler(req, res) {
+  // CORS: permita chamadas vindas da página de obrigado da Yampi
+  res.setHeader('Access-Control-Allow-Origin', 'https://seguro.ganhador-viva.site'); // ou '*' durante teste
+  res.setHeader('Vary', 'Origin');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Yampi-Hmac-SHA256');
+
+  if (req.method === 'OPTIONS') {
+    return res.status(204).end();
+  }
+
 // /api/y.js  — UM ENDPOINT PRA TUDO
 export const config = { api: { bodyParser: false } };
 
