@@ -1,19 +1,21 @@
-<!doctype html><html lang="pt-BR"><meta charset="utf-8">
-<title>Aguardando confirmação...</title>
-<h1>Confirmando seu PIX...</h1>
-<p>Assim que confirmar, você será redirecionado automaticamente.</p>
+<!doctype html><html lang="pt-br"><meta charset="utf-8"><title>Aguardando…</title>
+<body style="font-family:sans-serif">
+  <h1>Aguardando pagamento…</h1>
+  <p id="msg">Checando status…</p>
 <script>
-const p = new URLSearchParams(location.search);
-const order = p.get('order');
-async function check() {
-  const r = await fetch(`/api/pedido-status?order=${encodeURIComponent(order)}`, { cache: 'no-cache' });
-  const j = await r.json();
-  if (j.status === 'paid') {
-    location.href = `/obrigado.html?order=${encodeURIComponent(order)}`;
-  } else {
-    setTimeout(check, 4000);
-  }
+const params=new URLSearchParams(location.search);
+const order=params.get('order');
+if(!order){ document.getElementById('msg').textContent='Faltou ?order='; }
+async function tick(){
+  if(!order) return;
+  try{
+    const r=await fetch('/api/pedido-status?order='+encodeURIComponent(order));
+    const j=await r.json();
+    if(j.status==='paid'){ location.href='/obrigado.html'; return; }
+    document.getElementById('msg').textContent='Status: '+j.status+' (rechecando…)';
+  }catch(e){ document.getElementById('msg').textContent='Erro: '+e; }
+  setTimeout(tick, 3000);
 }
-check();
+tick();
 </script>
-</html>
+</body></html>
