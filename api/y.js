@@ -1,17 +1,7 @@
-export default async function handler(req, res) {
-  // CORS: permita chamadas vindas da página de obrigado da Yampi
-  res.setHeader('Access-Control-Allow-Origin', 'https://seguro.ganhador-viva.site'); // ou '*' durante teste
-  res.setHeader('Vary', 'Origin');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Yampi-Hmac-SHA256');
-
-  if (req.method === 'OPTIONS') {
-    return res.status(204).end();
-  }
-
-// /api/y.js  — UM ENDPOINT PRA TUDO
+// /api/y.js — UM ENDPOINT PRA TUDO
 export const config = { api: { bodyParser: false } };
 
+// ===== Helpers Upstash (REST path-style) =====
 function U() {
   const base = process.env.UPSTASH_REDIS_REST_URL;
   const token = process.env.UPSTASH_REDIS_REST_TOKEN;
@@ -20,11 +10,24 @@ function U() {
 
 async function upstashPath(path) {
   const { base, h } = U();
-  const r = await fetch(`${base}/${path}`, { method: 'POST', headers: h });
-  return r.json();
+  try {
+    const r = await fetch(`${base}/${path}`, { method: 'POST', headers: h });
+    const text = await r.text();
+    try { return JSON.parse(text); } catch { return { raw: text }; }
+  } catch (e) {
+    return { error: String(e) };
+  }
 }
 
+// ===== Handler principal =====
 export default async function handler(req, res) {
+  // ---------- CORS (permite chamada a partir da Yampi) ----------
+  res.setHeader('Access-Control-Allow-Origin', 'https://seguro.ganhador-viva.site'); // use '*' só em teste
+  res.setHeader('Vary', 'Origin');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Yampi-Hmac-SHA256');
+  if (req.method === 'OPTIONS') return res.status(204).end();
+
   // ---------- UTILITÁRIOS (GET) ----------
   if (req.method === 'GET') {
     const op = (req.query.op || '').toString();
@@ -38,12 +41,13 @@ export default async function handler(req, res) {
       return res.status(200).json({ write, read });
     }
 
-    // /api/y?op=set&order=123  -> marca pago manualmente
+    // /api/y?op=set&order=123  -> marca pago manualmente (debug)
     if (op === 'set') {
       if (!order) return res.status(400).json({ ok: false, error: 'missing order' });
-      await upstashPath(`set/${encodeURIComponent('order:'+order)}/paid`);
-      await upstashPath(`expire/${encodeURIComponent('order:'+order)}/86400`);
-      return res.status(200).json({ ok: true, order });
+      const k = encodeURIComponent('order:' + order);
+      const w1 = await upstashPath(`set/${k}/paid`);
+      const w2 = await upstashPath(`expire/${k}/86400`);
+      return res.status(200).json({ ok: !w1.error && !w2.error, write: { w1, w2 }, order });
     }
 
     // /api/y?op=get&order=123  -> lê a chave bruta
@@ -53,7 +57,7 @@ export default async function handler(req, res) {
       return res.status(200).json({ order, raw: r, value: r?.result ?? null });
     }
 
-    // /api/y?op=status&order=123  -> seu endpoint final de status
+    // /api/y?op=status&order=123  -> endpoint usado pelo front/script
     if (op === 'status') {
       if (!order) return res.status(200).json({ status: 'pending' });
       const r = await upstashPath(`get/${encodeURIComponent('order:'+order)}`);
@@ -61,55 +65,66 @@ export default async function handler(req, res) {
       return res.status(200).json({ status: value === 'paid' ? 'paid' : 'pending' });
     }
 
-    // /api/y?op=last  -> ultimo evento salvo (debug)
+    // /api/y?op=last  -> último evento salvo (debug)
     if (op === 'last') {
       const last = await upstashPath('get/yampi:last');
-      return res.status(200).json({ last_event: last?.result ? JSON.parse(last.result) : null });
+      let parsed = null;
+      try { parsed = last?.result ? JSON.parse(last.result) : null; } catch {}
+      return res.status(200).json({ last_event: parsed });
+    }
+
+    // /api/y?op=diag -> checa envs e teste de escrita (diagnóstico)
+    if (op === 'diag') {
+      const { base } = U();
+      const hasUrl = !!base;
+      const hasToken = !!process.env.UPSTASH_REDIS_REST_TOKEN;
+      const test = await upstashPath(`setex/yampi:diag/60/${encodeURIComponent('ok')}`);
+      return res.status(200).json({ hasUrl, hasToken, test });
     }
 
     // help
-    return res
-      .status(200)
-      .send(
+    return res.status(200).send(
 `y ok
 GET  /api/y?op=selfcheck
 GET  /api/y?op=set&order=123
 GET  /api/y?op=get&order=123
 GET  /api/y?op=status&order=123
 GET  /api/y?op=last
+GET  /api/y?op=diag
 POST /api/y   (webhook Yampi)`
-      );
+    );
   }
 
   // ---------- WEBHOOK (POST) ----------
   if (req.method !== 'POST') return res.status(405).end();
 
-  // Lê corpo bruto (necessário p/ HMAC)
+  // Corpo bruto (necessário p/ HMAC)
   const raw = await new Promise((resolve) => {
     const chunks = [];
     req.on('data', (c) => chunks.push(c));
     req.on('end', () => resolve(Buffer.concat(chunks)));
   });
 
-  // Valida HMAC se houver segredo definido
+  // Validação HMAC (se houver segredo definido)
   const secret = process.env.YAMPI_WEBHOOK_SECRET || '';
   if (secret) {
     const signature = req.headers['x-yampi-hmac-sha256'] || '';
     const crypto = await import('node:crypto');
     const expected = crypto.createHmac('sha256', secret).update(raw).digest('base64');
+
     let ok = false;
     try {
       const a = Buffer.from(signature, 'utf8');
       const b = Buffer.from(expected, 'utf8');
       ok = a.length === b.length && crypto.timingSafeEqual(a, b);
-    } catch {}
-    // salva visor do que chegou (mesmo se inválido)
-    try {
-      const snap = encodeURIComponent(JSON.stringify({
-        sigOk: ok, sigHeaderPresent: !!signature, t: new Date().toISOString()
-      }));
-      await upstashPath(`setex/yampi:last/600/${snap}`);
-    } catch {}
+    } catch { ok = false; }
+
+    // snapshot (mesmo se inválido) — útil pra debug
+    const snap = encodeURIComponent(JSON.stringify({
+      sigOk: ok, sigHeaderPresent: !!signature, t: new Date().toISOString()
+    }));
+    await upstashPath(`setex/yampi:last/600/${snap}`);
+
     if (!ok) return res.status(401).send('invalid signature');
   }
 
@@ -118,32 +133,32 @@ POST /api/y   (webhook Yampi)`
   try { body = JSON.parse(raw.toString('utf8')); } catch {}
 
   const event       = body?.event ?? null;
-  const order       = body?.resource || {};
-  const orderId     = order?.id ?? null;
-  const orderNumber = order?.number ?? null;
-  const statusAlias = order?.status?.data?.alias ?? null;
+  const resource    = body?.resource || {};
+  const orderId     = resource?.id ?? null;
+  const orderNumber = resource?.number ?? null;
+  const statusAlias = resource?.status?.data?.alias ?? null;
 
   // salva visor completo (10 min)
-  try {
-    const val = encodeURIComponent(JSON.stringify({
-      event, orderId, orderNumber, statusAlias, t: new Date().toISOString()
-    }));
-    await upstashPath(`setex/yampi:last/600/${val}`);
-  } catch {}
+  const visor = encodeURIComponent(JSON.stringify({
+    event, orderId, orderNumber, statusAlias, t: new Date().toISOString()
+  }));
+  await upstashPath(`setex/yampi:last/600/${visor}`);
 
-  // se for pago, grava ID e Number
+  // pago?
   const isPaid =
     event === 'order.paid' ||
     (event === 'order.status.updated' && statusAlias === 'paid');
 
   if (isPaid && (orderId || orderNumber)) {
     if (orderId) {
-      await upstashPath(`set/${encodeURIComponent('order:'+orderId)}/paid`);
-      await upstashPath(`expire/${encodeURIComponent('order:'+orderId)}/86400`);
+      const k = encodeURIComponent('order:' + orderId);
+      await upstashPath(`set/${k}/paid`);
+      await upstashPath(`expire/${k}/86400`);
     }
     if (orderNumber) {
-      await upstashPath(`set/${encodeURIComponent('order:'+orderNumber)}/paid`);
-      await upstashPath(`expire/${encodeURIComponent('order:'+orderNumber)}/86400`);
+      const k2 = encodeURIComponent('order:' + orderNumber);
+      await upstashPath(`set/${k2}/paid`);
+      await upstashPath(`expire/${k2}/86400`);
     }
   }
 
