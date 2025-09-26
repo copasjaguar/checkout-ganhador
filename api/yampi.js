@@ -10,26 +10,42 @@ export default async function handler(req, res) {
     req.on('end', () => resolve(Buffer.concat(chunks)));
   });
 
-  // Valida assinatura
+  // Valida assinatura (header é case-insensitive; Node já converte pra minúsculo)
   const signature = req.headers['x-yampi-hmac-sha256'] || '';
   const secret = process.env.YAMPI_WEBHOOK_SECRET;
   const crypto = await import('node:crypto');
   const expected = crypto.createHmac('sha256', secret).update(raw).digest('base64');
   const a = Buffer.from(signature, 'utf8');
   const b = Buffer.from(expected, 'utf8');
-  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+  const sigOk = (a.length === b.length) && crypto.timingSafeEqual(a, b);
+  if (!sigOk) {
+    // log mínimo pra debug
+    await fetch(process.env.UPSTASH_REDIS_REST_URL, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${process.env.UPSTASH_REDIS_REST_TOKEN}` },
+      body: JSON.stringify({ command: ["SETEX", "yampi:last", "600", JSON.stringify({ error:"invalid_signature", have: signature, note:"revise YAMPI_WEBHOOK_SECRET" })] })
+    });
     return res.status(401).send('invalid signature');
   }
 
   // Parse
   const body = JSON.parse(raw.toString('utf8'));
   const event = body?.event;
-  const order = body?.resource || {};
-  const orderId = order?.id;        // ID interno
+  const order  = body?.resource || {};
+  const orderId = order?.id;         // ID interno
   const orderNumber = order?.number; // número público
   const statusAlias = order?.status?.data?.alias; // ex.: 'paid'
 
-  // Considera pago em dois cenários (PIX à vista às vezes usa status.updated):
+  // Salva um "visor" do último evento (expira em 10 min)
+  await fetch(process.env.UPSTASH_REDIS_REST_URL, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${process.env.UPSTASH_REDIS_REST_TOKEN}` },
+    body: JSON.stringify({ command: ["SETEX", "yampi:last", "600", JSON.stringify({
+      event, orderId, orderNumber, statusAlias, t: new Date().toISOString()
+    })] })
+  });
+
+  // Considera pago em dois cenários
   const isPaid =
     event === 'order.paid' ||
     (event === 'order.status.updated' && statusAlias === 'paid');
@@ -38,7 +54,6 @@ export default async function handler(req, res) {
     const pipeline = [];
     if (orderId)     { pipeline.push(['SET', `order:${orderId}`, 'paid'],     ['EXPIRE', `order:${orderId}`, 86400]); }
     if (orderNumber) { pipeline.push(['SET', `order:${orderNumber}`, 'paid'], ['EXPIRE', `order:${orderNumber}`, 86400]); }
-
     if (pipeline.length) {
       await fetch(process.env.UPSTASH_REDIS_REST_URL, {
         method: "POST",
