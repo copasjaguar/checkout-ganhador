@@ -1,10 +1,10 @@
-// /api/y.js — UM ENDPOINT PRA TUDO
+// /api/y.js — UM ENDPOINT PRA TUDO (status + dados do cliente)
 export const config = { api: { bodyParser: false } };
 
 // ===== Helpers Upstash (REST path-style) =====
 function U() {
-  const base = process.env.UPSTASH_REDIS_REST_URL;
-  const token = process.env.UPSTASH_REDIS_REST_TOKEN;
+  const base = process.env.UPSTASH_REDIS_REST_URL;            // ex: https://rich-macaw-11847.upstash.io
+  const token = process.env.UPSTASH_REDIS_REST_TOKEN;         // ex: AS5H...
   return { base, h: { Authorization: `Bearer ${token}` } };
 }
 
@@ -65,6 +65,19 @@ export default async function handler(req, res) {
       return res.status(200).json({ status: value === 'paid' ? 'paid' : 'pending' });
     }
 
+    // /api/y?op=info&order=123  -> retorna dados do cliente/itens (somente se pago)
+    if (op === 'info') {
+      if (!order) return res.status(400).json({ error: 'missing order' });
+      const paid = await upstashPath(`get/${encodeURIComponent('order:'+order)}`);
+      if (paid?.result !== 'paid') {
+        return res.status(403).json({ paid: false, error: 'not paid' });
+      }
+      const info = await upstashPath(`get/${encodeURIComponent('info:'+order)}`);
+      let data = null;
+      try { data = info?.result ? JSON.parse(info.result) : null; } catch {}
+      return res.status(200).json({ paid: true, data });
+    }
+
     // /api/y?op=last  -> último evento salvo (debug)
     if (op === 'last') {
       const last = await upstashPath('get/yampi:last');
@@ -89,6 +102,7 @@ GET  /api/y?op=selfcheck
 GET  /api/y?op=set&order=123
 GET  /api/y?op=get&order=123
 GET  /api/y?op=status&order=123
+GET  /api/y?op=info&order=123   (nome/email/telefone/itens se pago)
 GET  /api/y?op=last
 GET  /api/y?op=diag
 POST /api/y   (webhook Yampi)`
@@ -138,11 +152,43 @@ POST /api/y   (webhook Yampi)`
   const orderNumber = resource?.number ?? null;
   const statusAlias = resource?.status?.data?.alias ?? null;
 
+  // ===== Extrai dados do cliente e itens (se vierem) =====
+  const cust = resource?.customer?.data || {};
+  const name = (cust?.name || `${cust?.first_name ?? ''} ${cust?.last_name ?? ''}`.trim()) || null;
+  const email = cust?.email || null;
+  const phone = cust?.phone?.formated_number || cust?.phone?.full_number || null;
+
+  const itemsRaw = Array.isArray(resource?.items?.data) ? resource.items.data : [];
+  const items = itemsRaw.map((it) => ({
+    id: it?.id ?? null,
+    sku: it?.sku?.data?.sku ?? null,
+    title: it?.sku?.data?.title ?? null,
+    quantity: it?.quantity ?? null,
+    price: it?.price ?? null
+  }));
+
+  const infoPayload = {
+    orderId, orderNumber,
+    name, email, phone, items
+  };
+
   // salva visor completo (10 min)
   const visor = encodeURIComponent(JSON.stringify({
     event, orderId, orderNumber, statusAlias, t: new Date().toISOString()
   }));
   await upstashPath(`setex/yampi:last/600/${visor}`);
+
+  // TTL para chaves (24h)
+  const ttl = 60 * 60 * 24;
+
+  // Sempre salvar info:<id>/<number> (se existir), indep. do status
+  async function saveInfoFor(key) {
+    const kInfo = encodeURIComponent('info:' + key);
+    const payload = encodeURIComponent(JSON.stringify(infoPayload));
+    await upstashPath(`setex/${kInfo}/${ttl}/${payload}`);
+  }
+  if (orderId)     await saveInfoFor(orderId);
+  if (orderNumber) await saveInfoFor(orderNumber);
 
   // pago?
   const isPaid =
@@ -153,12 +199,12 @@ POST /api/y   (webhook Yampi)`
     if (orderId) {
       const k = encodeURIComponent('order:' + orderId);
       await upstashPath(`set/${k}/paid`);
-      await upstashPath(`expire/${k}/86400`);
+      await upstashPath(`expire/${k}/${ttl}`);
     }
     if (orderNumber) {
       const k2 = encodeURIComponent('order:' + orderNumber);
       await upstashPath(`set/${k2}/paid`);
-      await upstashPath(`expire/${k2}/86400`);
+      await upstashPath(`expire/${k2}/${ttl}`);
     }
   }
 
