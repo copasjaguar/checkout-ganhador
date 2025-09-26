@@ -24,26 +24,28 @@ export default async function handler(req, res) {
   // Parse
   const body = JSON.parse(raw.toString('utf8'));
   const event = body?.event;
-  const orderId = body?.resource?.id;
-  const statusAlias = body?.resource?.status?.data?.alias; // ex.: 'paid'
+  const order = body?.resource || {};
+  const orderId = order?.id;        // ID interno
+  const orderNumber = order?.number; // número público
+  const statusAlias = order?.status?.data?.alias; // ex.: 'paid'
 
-  // Considera pago em dois cenários:
+  // Considera pago em dois cenários (PIX à vista às vezes usa status.updated):
   const isPaid =
     event === 'order.paid' ||
     (event === 'order.status.updated' && statusAlias === 'paid');
 
-  // Grava no Upstash
-  if (isPaid && orderId) {
-    await fetch(process.env.UPSTASH_REDIS_REST_URL, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${process.env.UPSTASH_REDIS_REST_TOKEN}` },
-      body: JSON.stringify({
-        pipeline: [
-          ["SET", `order:${orderId}`, "paid"],
-          ["EXPIRE", `order:${orderId}`, 86400]
-        ]
-      })
-    });
+  if (isPaid && (orderId || orderNumber)) {
+    const pipeline = [];
+    if (orderId)     { pipeline.push(['SET', `order:${orderId}`, 'paid'],     ['EXPIRE', `order:${orderId}`, 86400]); }
+    if (orderNumber) { pipeline.push(['SET', `order:${orderNumber}`, 'paid'], ['EXPIRE', `order:${orderNumber}`, 86400]); }
+
+    if (pipeline.length) {
+      await fetch(process.env.UPSTASH_REDIS_REST_URL, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${process.env.UPSTASH_REDIS_REST_TOKEN}` },
+        body: JSON.stringify({ pipeline })
+      });
+    }
   }
 
   return res.status(200).send('ok');
