@@ -1,24 +1,18 @@
 export default async function handler(req, res) {
-  const order = req.query.order; // opcional (?order=1444...)
-  const calls = [];
+  const order = req.query.order?.toString();
+  const h = { Authorization:`Bearer ${process.env.UPSTASH_REDIS_REST_TOKEN}`, 'Content-Type':'application/json' };
 
-  // GET yampi:last
-  calls.push(fetch(process.env.UPSTASH_REDIS_REST_URL, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${process.env.UPSTASH_REDIS_REST_TOKEN}` },
-    body: JSON.stringify({ command: ["GET", "yampi:last"] })
-  }).then(r => r.json()));
+  const last = await fetch(process.env.UPSTASH_REDIS_REST_URL, {
+    method:'POST', headers:h, body: JSON.stringify({ command:['GET','yampi:last'] })
+  }).then(r=>r.json()).catch(()=>null);
 
-  // GET order:<order> (se informado)
+  let ord = null;
   if (order) {
-    calls.push(fetch(process.env.UPSTASH_REDIS_REST_URL, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${process.env.UPSTASH_REDIS_REST_TOKEN}` },
-      body: JSON.stringify({ command: ["GET", `order:${order}`] })
-    }).then(r => r.json()));
+    ord = await fetch(process.env.UPSTASH_REDIS_REST_URL, {
+      method:'POST', headers:h, body: JSON.stringify({ command:['GET', `order:${order}`] })
+    }).then(r=>r.json()).catch(()=>null);
   }
 
-  const [last, ord] = await Promise.all(calls);
   res.status(200).json({
     last_event: last?.result ? JSON.parse(last.result) : null,
     order_key: order ? (ord?.result ?? null) : null
