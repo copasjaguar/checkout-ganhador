@@ -3,7 +3,7 @@ export const config = { api: { bodyParser: false } };
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).end();
 
-  // RAW body (p/ HMAC)
+  // RAW body p/ HMAC
   const raw = await new Promise((resolve) => {
     const chunks = [];
     req.on('data', (c) => chunks.push(c));
