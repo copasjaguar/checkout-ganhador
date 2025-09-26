@@ -14,6 +14,41 @@ async function upstashPath(path) {
   try { return JSON.parse(t); } catch { return { raw: t }; }
 }
 
+// ===== Envio para Telegram =====
+async function sendTelegram(info) {
+  try {
+    const token = process.env.TELEGRAM_BOT_TOKEN;
+    const chatId = process.env.TELEGRAM_CHAT_ID;
+    if (!token || !chatId) return;
+
+    const text = `
+✅ *Pagamento confirmado!*
+
+📦 Pedido: ${info.orderNumber || info.orderId}
+👤 Nome: ${info.name || "-"}
+📧 Email: ${info.email || "-"}
+📞 Telefone: ${info.phone || "-"}
+
+*Itens:*
+${(info.items || [])
+  .map(it => `- ${it.title} (SKU: ${it.sku}) x${it.quantity} — R$ ${it.price}`)
+  .join("\n")}
+    `;
+
+    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text,
+        parse_mode: "Markdown"
+      })
+    });
+  } catch (e) {
+    console.error("Erro ao enviar Telegram:", e);
+  }
+}
+
 // ===== Handler principal =====
 export default async function handler(req, res) {
   // CORS (permite Yampi)
@@ -136,7 +171,7 @@ POST /api/y   (webhook Yampi)`
   const orderNumber = resource?.number ?? null;
   const statusAlias = resource?.status?.data?.alias ?? null;
 
-  // ---- Extrair dados de cliente/itens (modelo da doc da Yampi) ----
+  // ---- Extrair dados de cliente/itens ----
   const cust = resource?.customer?.data || {};
   const name  = (cust?.name || `${cust?.first_name ?? ''} ${cust?.last_name ?? ''}`.trim()) || null;
   const email = cust?.email || null;
@@ -164,7 +199,7 @@ POST /api/y   (webhook Yampi)`
     event === 'order.paid' ||
     (event === 'order.status.updated' && statusAlias === 'paid');
 
-  // Sempre salvar INFO (assim o /info já tem conteúdo depois)
+  // Sempre salvar INFO
   const ttl = 60 * 60 * 24; // 24h
   async function saveInfoFor(key) {
     const kInfo = encodeURIComponent('info:' + key);
@@ -174,7 +209,7 @@ POST /api/y   (webhook Yampi)`
   if (orderId)     await saveInfoFor(orderId);
   if (orderNumber) await saveInfoFor(orderNumber);
 
-  // Se pago, libera chaves de autorização
+  // Se pago, libera chaves e envia Telegram
   if (isPaid && (orderId || orderNumber)) {
     if (orderId) {
       const k = encodeURIComponent('order:' + orderId);
@@ -186,6 +221,8 @@ POST /api/y   (webhook Yampi)`
       await upstashPath(`set/${k2}/paid`);
       await upstashPath(`expire/${k2}/${ttl}`);
     }
+    // Envia mensagem para o Telegram
+    await sendTelegram(infoPayload);
   }
 
   return res.status(200).send('ok');
