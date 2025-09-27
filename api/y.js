@@ -161,22 +161,23 @@ POST /api/y   (webhook Yampi)`
     if (!ok) return res.status(401).send('invalid signature');
   }
 
-  // Parse payload
+   // Parse payload
   let body = {};
   try { body = JSON.parse(raw.toString('utf8')); } catch {}
-
+  
   const event       = body?.event ?? null;
   const resource    = body?.resource || {};
   const orderId     = resource?.id ?? null;
   const orderNumber = resource?.number ?? null;
   const statusAlias = resource?.status?.data?.alias ?? null;
-
+  
   // ---- Extrair dados de cliente/itens ----
   const cust = resource?.customer?.data || {};
   const name  = (cust?.name || `${cust?.first_name ?? ''} ${cust?.last_name ?? ''}`.trim()) || null;
   const email = cust?.email || null;
   const phone = cust?.phone?.formated_number || cust?.phone?.full_number || null;
-
+  const cpf   = cust?.cpf ?? null;
+  
   const itemsRaw = Array.isArray(resource?.items?.data) ? resource.items.data : [];
   const items = itemsRaw.map(it => ({
     id: it?.id ?? null,
@@ -185,8 +186,9 @@ POST /api/y   (webhook Yampi)`
     quantity: it?.quantity ?? null,
     price: it?.price ?? null
   }));
+  
+  const infoPayload = { orderId, orderNumber, name, email, phone, cpf, items };
 
-  const infoPayload = { orderId, orderNumber, name, email, phone, items };
 
   // Snapshot do evento
   const visor = encodeURIComponent(JSON.stringify({
