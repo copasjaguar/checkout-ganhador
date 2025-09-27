@@ -214,19 +214,27 @@ POST /api/y   (webhook Yampi)`
 
   // Se pago, libera chaves e envia Telegram
   if (isPaid && (orderId || orderNumber)) {
-    if (orderId) {
-      const k = encodeURIComponent('order:' + orderId);
-      await upstashPath(`set/${k}/paid`);
-      await upstashPath(`expire/${k}/${ttl}`);
+    const dedupKey = encodeURIComponent(`sent:${orderId || orderNumber}`);
+    const alreadySent = await upstashPath(`get/${dedupKey}`);
+
+    if (!alreadySent?.result) {
+      await upstashPath(`setex/${dedupKey}/${ttl}/1`);
+
+      if (orderId) {
+        const k = encodeURIComponent('order:' + orderId);
+        await upstashPath(`set/${k}/paid`);
+        await upstashPath(`expire/${k}/${ttl}`);
+      }
+      if (orderNumber) {
+        const k2 = encodeURIComponent('order:' + orderNumber);
+        await upstashPath(`set/${k2}/paid`);
+        await upstashPath(`expire/${k2}/${ttl}`);
+      }
+      // Envia mensagem para o Telegram
+      await sendTelegram(infoPayload);
     }
-    if (orderNumber) {
-      const k2 = encodeURIComponent('order:' + orderNumber);
-      await upstashPath(`set/${k2}/paid`);
-      await upstashPath(`expire/${k2}/${ttl}`);
-    }
-    // Envia mensagem para o Telegram
-    await sendTelegram(infoPayload);
   }
 
   return res.status(200).send('ok');
 }
+
