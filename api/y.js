@@ -28,6 +28,7 @@ async function sendTelegram(info) {
 👤 Nome: ${info.name || "-"}
 📧 Email: ${info.email || "-"}
 📞 Telefone: ${info.phone || "-"}
+🪪 CPF: ${info.cpf || "-"}
 
 *Itens:*
 ${(info.items || [])
