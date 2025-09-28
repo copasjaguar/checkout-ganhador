@@ -14,7 +14,7 @@ async function upstashPath(path) {
   try { return JSON.parse(t); } catch { return { raw: t }; }
 }
 
-// ===== Envio para Telegram =====
+// ===== Envio para Telegram — Pagamento confirmado =====
 async function sendTelegram(info) {
   try {
     const token = process.env.TELEGRAM_BOT_TOKEN;
@@ -47,6 +47,37 @@ ${(info.items || [])
     });
   } catch (e) {
     console.error("Erro ao enviar Telegram:", e);
+  }
+}
+
+// ===== Envio para Telegram — Carrinho abandonado =====
+async function sendTelegramCart(info) {
+  try {
+    const token = process.env.TELEGRAM_BOT_TOKEN;
+    const chatId = process.env.TELEGRAM_CHAT_ID;
+    if (!token || !chatId) return;
+
+    const text = `
+🛒 *Carrinho abandonado*
+
+👤 Nome: ${info.name || "-"}
+📧 Email: ${info.email || "-"}
+📞 Telefone: ${info.phone || "-"}
+🪪 CPF: ${info.cpf || "-"}
+
+*Itens:*
+${(info.items || [])
+  .map(it => `- ${it.title} (SKU: ${it.sku}) x${it.quantity} — R$ ${it.price}`)
+  .join("\n")}
+    `;
+
+    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_id: chatId, text, parse_mode: "Markdown" })
+    });
+  } catch (e) {
+    console.error("Erro ao enviar Telegram (cart.reminder):", e);
   }
 }
 
@@ -162,23 +193,23 @@ POST /api/y   (webhook Yampi)`
     if (!ok) return res.status(401).send('invalid signature');
   }
 
-   // Parse payload
+  // Parse payload
   let body = {};
   try { body = JSON.parse(raw.toString('utf8')); } catch {}
-  
+
   const event       = body?.event ?? null;
   const resource    = body?.resource || {};
   const orderId     = resource?.id ?? null;
   const orderNumber = resource?.number ?? null;
   const statusAlias = resource?.status?.data?.alias ?? null;
-  
+
   // ---- Extrair dados de cliente/itens ----
   const cust = resource?.customer?.data || {};
   const name  = (cust?.name || `${cust?.first_name ?? ''} ${cust?.last_name ?? ''}`.trim()) || null;
   const email = cust?.email || null;
   const phone = cust?.phone?.formated_number || cust?.phone?.full_number || null;
   const cpf   = cust?.cpf ?? null;
-  
+
   const itemsRaw = Array.isArray(resource?.items?.data) ? resource.items.data : [];
   const items = itemsRaw.map(it => ({
     id: it?.id ?? null,
@@ -187,15 +218,19 @@ POST /api/y   (webhook Yampi)`
     quantity: it?.quantity ?? null,
     price: it?.price ?? null
   }));
-  
-  const infoPayload = { orderId, orderNumber, name, email, phone, cpf, items };
 
+  const infoPayload = { orderId, orderNumber, name, email, phone, cpf, items };
 
   // Snapshot do evento
   const visor = encodeURIComponent(JSON.stringify({
     event, orderId, orderNumber, statusAlias, t: new Date().toISOString()
   }));
   await upstashPath(`setex/yampi:last/600/${visor}`);
+
+  // Se for carrinho abandonado, notifica no Telegram (sem dedupe)
+  if (event === 'cart.reminder') {
+    await sendTelegramCart(infoPayload);
+  }
 
   // Regras de pago
   const isPaid =
@@ -212,7 +247,7 @@ POST /api/y   (webhook Yampi)`
   if (orderId)     await saveInfoFor(orderId);
   if (orderNumber) await saveInfoFor(orderNumber);
 
-  // Se pago, libera chaves e envia Telegram
+  // Se pago, libera chaves e envia Telegram (com dedupe por pedido)
   if (isPaid && (orderId || orderNumber)) {
     const dedupKey = encodeURIComponent(`sent:${orderId || orderNumber}`);
     const alreadySent = await upstashPath(`get/${dedupKey}`);
@@ -237,4 +272,3 @@ POST /api/y   (webhook Yampi)`
 
   return res.status(200).send('ok');
 }
-
